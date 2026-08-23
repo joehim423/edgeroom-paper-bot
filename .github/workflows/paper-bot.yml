@@ -1,5 +1,7 @@
 name: EdgeRoom Paper Bot
 
+# Runs the free cloud paper bot from GitHub Actions.
+
 on:
   schedule:
     - cron: "0 14 * * *"
