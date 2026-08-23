@@ -40,6 +40,7 @@ type PickResult = {
 type PaperBotBet = {
   id: string;
   placedAt: string;
+  settledAt?: string | null;
   sport: string;
   event: string;
   market: string;
@@ -102,6 +103,15 @@ function formatDateTime(value: string | null) {
   }).format(new Date(value));
 }
 
+function formatCalendarDate(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(year, month - 1, day));
+}
+
 function isoDate(year: number, month: number, day: number) {
   return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
@@ -119,6 +129,12 @@ function currentMonthStart() {
 function monthStartFromIso(date: string) {
   const [year, month] = date.split("-").map(Number);
   return new Date(year, month - 1, 1);
+}
+
+function localIsoDateFromTimestamp(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(0, 10);
+  return isoDate(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
 function totalPayout(stake: number, decimal: number) {
@@ -293,6 +309,7 @@ export function BettingDashboard() {
           <PnlCalendar
             month={calendarMonth}
             onMonthChange={setCalendarMonth}
+            paperBets={paperBot?.bets ?? []}
             picks={picks}
             results={results}
             todayIso={todayIso}
@@ -524,21 +541,25 @@ function PaperBotPanel({
 function PnlCalendar({
   month,
   onMonthChange,
+  paperBets,
   picks,
   results,
   todayIso,
 }: {
   month: Date;
   onMonthChange: (date: Date) => void;
+  paperBets: PaperBotBet[];
   picks: ApiPick[];
   results: Record<string, PickResult>;
   todayIso: string;
 }) {
+  const [selectedDate, setSelectedDate] = useState<string | null>(todayIso);
   const year = month.getFullYear();
   const monthIndex = month.getMonth();
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
   const firstDayOffset = (new Date(year, monthIndex, 1).getDay() + 6) % 7;
   const dailyPnl = new Map<string, number>();
+  const paperBetsByDate = new Map<string, PaperBotBet[]>();
 
   picks.forEach((pick) => {
     const result = results[pick.id];
@@ -546,10 +567,25 @@ function PnlCalendar({
     dailyPnl.set(result.settledDate, (dailyPnl.get(result.settledDate) ?? 0) + profitFor(pick, result));
   });
 
+  paperBets.forEach((bet) => {
+    if (bet.status === "open") return;
+    const date = localIsoDateFromTimestamp(bet.settledAt ?? bet.placedAt);
+    dailyPnl.set(date, (dailyPnl.get(date) ?? 0) + bet.profit);
+  });
+
+  paperBets.forEach((bet) => {
+    const dates = new Set([localIsoDateFromTimestamp(bet.placedAt)]);
+    if (bet.settledAt) dates.add(localIsoDateFromTimestamp(bet.settledAt));
+    dates.forEach((date) => {
+      paperBetsByDate.set(date, [...(paperBetsByDate.get(date) ?? []), bet]);
+    });
+  });
+
   const monthValues = Array.from({ length: daysInMonth }, (_, index) => {
     const date = isoDate(year, monthIndex, index + 1);
     return dailyPnl.get(date) ?? 0;
   });
+  const selectedBets = selectedDate ? (paperBetsByDate.get(selectedDate) ?? []) : [];
   const monthTotal = monthValues.reduce((total, value) => total + value, 0);
   const positiveDays = monthValues.filter((value) => value > 0).length;
   const negativeDays = monthValues.filter((value) => value < 0).length;
@@ -611,25 +647,103 @@ function PnlCalendar({
           const isWin = value > 0;
           const isLoss = value < 0;
           const isToday = date === todayIso;
+          const dayBets = paperBetsByDate.get(date) ?? [];
+          const isSelected = selectedDate === date;
           return (
-            <div
+            <button
               className={
                 isWin
-                  ? `calendar-day bg-[#102a21] text-[#25f0aa] ${isToday ? "ring-1 ring-[#46d982]" : ""}`
+                  ? `calendar-day cursor-pointer bg-[#102a21] text-left text-[#25f0aa] transition hover:border-[#46d982] hover:bg-[#123425] ${isToday || isSelected ? "ring-1 ring-[#46d982]" : ""}`
                   : isLoss
-                    ? `calendar-day bg-[#351b29] text-[#ff2f87] ${isToday ? "ring-1 ring-[#46d982]" : ""}`
-                    : `calendar-day text-[#858b9b] ${isToday ? "ring-1 ring-[#46d982]" : ""}`
+                    ? `calendar-day cursor-pointer bg-[#351b29] text-left text-[#ff2f87] transition hover:border-[#ff2f87] hover:bg-[#421f31] ${isToday || isSelected ? "ring-1 ring-[#46d982]" : ""}`
+                    : `calendar-day cursor-pointer text-left text-[#858b9b] transition hover:border-[#46d982] hover:bg-[#182019] ${isToday || isSelected ? "ring-1 ring-[#46d982]" : ""}`
               }
               key={day}
+              onClick={() => setSelectedDate(date)}
+              type="button"
             >
               <span className={isWin || isLoss ? "text-[#d6dae3]" : "text-[#565d6d]"}>
                 {day}
               </span>
               <strong>{formatShortMoney(value)}</strong>
-            </div>
+              {dayBets.length > 0 ? (
+                <em className="mt-1 not-italic text-[10px] font-semibold uppercase tracking-[0.16em] text-[#9fb7a7]">
+                  {dayBets.length} paper {dayBets.length === 1 ? "bet" : "bets"}
+                </em>
+              ) : null}
+            </button>
           );
         })}
       </div>
+      {selectedDate ? (
+        <div className="mx-5 mb-4 rounded-lg border border-[#26352c] bg-[#0c110d] p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#7fa58c]">Paper bets</p>
+              <h3 className="mt-1 text-base font-semibold text-white">{formatCalendarDate(selectedDate)}</h3>
+            </div>
+            <button
+              className="rounded-md border border-[#2b3038] px-2.5 py-1 text-xs font-semibold text-[#8b93a3] hover:bg-[#1c2028] hover:text-white"
+              onClick={() => setSelectedDate(null)}
+              type="button"
+            >
+              Close
+            </button>
+          </div>
+          <div className="mt-4 space-y-2">
+            {selectedBets.length > 0 ? (
+              selectedBets.map((bet) => {
+                const placedDate = localIsoDateFromTimestamp(bet.placedAt);
+                const settledDate = bet.settledAt ? localIsoDateFromTimestamp(bet.settledAt) : null;
+                return (
+                  <div className="rounded-md border border-[#26352c] bg-[#08100b] p-3" key={`${selectedDate}-${bet.id}`}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <strong className="max-w-full text-sm text-white">{bet.selection}</strong>
+                      <span
+                        className={
+                          bet.status === "won"
+                            ? "rounded-full bg-[#123425] px-2 py-0.5 text-xs font-semibold text-[#25f0aa]"
+                            : bet.status === "lost"
+                              ? "rounded-full bg-[#351b29] px-2 py-0.5 text-xs font-semibold text-[#ff2f87]"
+                              : "rounded-full bg-[#181a1e] px-2 py-0.5 text-xs font-semibold text-[#aab1c0]"
+                        }
+                      >
+                        {bet.status.toUpperCase()}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs leading-5 text-[#aab1c0]">{bet.exactBet}</p>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                      <span className="rounded-md border border-[#26352c] p-2 text-[#94a298]">
+                        Stake <strong className="block text-white">{formatMoney(bet.stake)}</strong>
+                      </span>
+                      <span className="rounded-md border border-[#26352c] p-2 text-[#94a298]">
+                        P/L{" "}
+                        <strong className={bet.profit >= 0 ? "block text-[#25f0aa]" : "block text-[#ff2f87]"}>
+                          {formatShortMoney(bet.profit)}
+                        </strong>
+                      </span>
+                      <span className="rounded-md border border-[#26352c] p-2 text-[#94a298]">
+                        Odds <strong className="block text-white">{bet.odds.toFixed(2)}</strong>
+                      </span>
+                      <span className="rounded-md border border-[#26352c] p-2 text-[#94a298]">
+                        Book <strong className="block text-white">{bet.book}</strong>
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs text-[#7f8b83]">
+                      {bet.market} · {bet.event}
+                      {settledDate && settledDate !== placedDate ? ` · settled ${formatCalendarDate(settledDate)}` : ""}
+                    </p>
+                  </div>
+                );
+              })
+            ) : (
+              <p className="rounded-md border border-[#26352c] bg-[#08100b] p-3 text-sm text-[#94a298]">
+                No paper bets were logged on this day.
+              </p>
+            )}
+          </div>
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-3 px-5 pb-4 text-xs text-[#8b93a3]">
         <span className="rounded-full border border-[#2b3038] bg-[#181a1e] px-3 py-1">
           Best Positive Streak in {monthNames[monthIndex]}:{" "}

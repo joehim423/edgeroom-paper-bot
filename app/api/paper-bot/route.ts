@@ -11,6 +11,7 @@ type BotStateRow = {
 type BetRow = {
   id: string;
   placed_at: string;
+  settled_at: string | null;
   sport: string | null;
   event: string | null;
   market: string;
@@ -69,7 +70,7 @@ export async function GET() {
   try {
     const [states, bets] = await Promise.all([
       supabaseFetch<BotStateRow[]>("bot_state?id=eq.main&select=*"),
-      supabaseFetch<BetRow[]>("paper_bets?select=*&order=placed_at.desc&limit=25"),
+      supabaseFetch<BetRow[]>("paper_bets?select=*&order=placed_at.desc&limit=50"),
     ]);
     const state = states[0];
 
@@ -97,6 +98,7 @@ export async function GET() {
         bets: bets.map((bet) => ({
           id: bet.id,
           placedAt: bet.placed_at,
+          settledAt: bet.settled_at,
           sport: bet.sport ?? "Sport",
           event: bet.event ?? "Event",
           market: bet.market,
