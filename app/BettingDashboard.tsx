@@ -68,6 +68,12 @@ type PaperBotState = {
   bets: PaperBotBet[];
 };
 
+type PaperBotResponse = {
+  status: "ok" | "needs_supabase_env" | "empty" | "error";
+  message?: string;
+  state: PaperBotState | null;
+};
+
 const STORAGE_KEY = "edgeroom-api-results-v1";
 const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const weekDays = ["M", "T", "W", "T", "F", "S", "S"];
@@ -151,6 +157,7 @@ export function BettingDashboard() {
     picks: [],
   });
   const [paperBot, setPaperBot] = useState<PaperBotState | null>(null);
+  const [paperBotMessage, setPaperBotMessage] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, PickResult>>({});
   const [loading, setLoading] = useState(true);
 
@@ -176,10 +183,16 @@ export function BettingDashboard() {
   }, [loadOdds]);
 
   useEffect(() => {
-    fetch(`/paper-bot-state.json?ts=${Date.now()}`, { cache: "no-store" })
+    fetch(`/api/paper-bot?ts=${Date.now()}`, { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : null))
-      .then((state) => setPaperBot(state as PaperBotState | null))
-      .catch(() => setPaperBot(null));
+      .then((response: PaperBotResponse | null) => {
+        setPaperBot(response?.state ?? null);
+        setPaperBotMessage(response?.message ?? null);
+      })
+      .catch(() => {
+        setPaperBot(null);
+        setPaperBotMessage("Unable to load the cloud paper bot state.");
+      });
   }, []);
 
   useEffect(() => {
@@ -441,14 +454,20 @@ export function BettingDashboard() {
             </div>
           </section>
 
-          <PaperBotPanel state={paperBot} />
+          <PaperBotPanel message={paperBotMessage} state={paperBot} />
         </aside>
       </section>
     </main>
   );
 }
 
-function PaperBotPanel({ state }: { state: PaperBotState | null }) {
+function PaperBotPanel({
+  message,
+  state,
+}: {
+  message: string | null;
+  state: PaperBotState | null;
+}) {
   const bets = state?.bets.slice().reverse().slice(0, 5) ?? [];
 
   return (
@@ -495,7 +514,7 @@ function PaperBotPanel({ state }: { state: PaperBotState | null }) {
         </div>
       ) : (
         <p className="rounded-md border border-[#26352c] bg-[#0c110d] p-3 text-sm leading-6 text-[#94a298]">
-          The bot state file has not been created yet. Run the paper bot once or wait for the scheduled task.
+          {message ?? "The cloud bot state has not been created yet. Run the GitHub workflow once or wait for the scheduled task."}
         </p>
       )}
     </section>
