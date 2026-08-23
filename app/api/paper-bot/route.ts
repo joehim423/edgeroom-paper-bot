@@ -12,6 +12,7 @@ type BetRow = {
   id: string;
   placed_at: string;
   settled_at: string | null;
+  commence_time: string | null;
   sport: string | null;
   event: string | null;
   market: string;
@@ -99,6 +100,7 @@ export async function GET() {
           id: bet.id,
           placedAt: bet.placed_at,
           settledAt: bet.settled_at,
+          commenceTime: bet.commence_time,
           sport: bet.sport ?? "Sport",
           event: bet.event ?? "Event",
           market: bet.market,

@@ -41,6 +41,7 @@ type PaperBotBet = {
   id: string;
   placedAt: string;
   settledAt?: string | null;
+  commenceTime?: string | null;
   sport: string;
   event: string;
   market: string;
@@ -153,6 +154,10 @@ function profitFor(pick: ApiPick, result: PickResult) {
 
 function uniqueBetsById(bets: PaperBotBet[]) {
   return Array.from(new Map(bets.map((bet) => [bet.id, bet])).values());
+}
+
+function paperBetCalendarDate(bet: PaperBotBet) {
+  return localIsoDateFromTimestamp(bet.settledAt ?? bet.commenceTime ?? bet.placedAt);
 }
 
 function recommendedStake(pick: ApiPick, bankroll: number, maxRisk: number) {
@@ -574,12 +579,12 @@ function PnlCalendar({
 
   uniquePaperBets.forEach((bet) => {
     if (bet.status === "open") return;
-    const date = localIsoDateFromTimestamp(bet.settledAt ?? bet.placedAt);
+    const date = paperBetCalendarDate(bet);
     dailyPnl.set(date, (dailyPnl.get(date) ?? 0) + bet.profit);
   });
 
   uniquePaperBets.forEach((bet) => {
-    const date = localIsoDateFromTimestamp(bet.settledAt ?? bet.placedAt);
+    const date = paperBetCalendarDate(bet);
     paperBetsByDate.set(date, [...(paperBetsByDate.get(date) ?? []), bet]);
   });
 
@@ -681,7 +686,7 @@ function PnlCalendar({
         <div className="mx-5 mb-4 rounded-lg border border-[#26352c] bg-[#0c110d] p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#7fa58c]">Paper bets settled</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#7fa58c]">Paper bets for date</p>
               <h3 className="mt-1 text-base font-semibold text-white">{formatCalendarDate(selectedDate)}</h3>
             </div>
             <button
@@ -695,8 +700,8 @@ function PnlCalendar({
           <div className="mt-4 space-y-2">
             {selectedBets.length > 0 ? (
               selectedBets.map((bet) => {
-                const placedDate = localIsoDateFromTimestamp(bet.placedAt);
                 const settledDate = bet.settledAt ? localIsoDateFromTimestamp(bet.settledAt) : null;
+                const expectedDate = bet.commenceTime ? localIsoDateFromTimestamp(bet.commenceTime) : null;
                 return (
                   <div className="rounded-md border border-[#26352c] bg-[#08100b] p-3" key={`${selectedDate}-${bet.id}`}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -733,14 +738,18 @@ function PnlCalendar({
                     </div>
                     <p className="mt-2 text-xs text-[#7f8b83]">
                       {bet.market} · {bet.event}
-                      {settledDate && settledDate !== placedDate ? ` · settled ${formatCalendarDate(settledDate)}` : ""}
+                      {settledDate
+                        ? ` · settled ${formatCalendarDate(settledDate)}`
+                        : expectedDate
+                          ? ` · expected ${formatCalendarDate(expectedDate)}`
+                          : ""}
                     </p>
                   </div>
                 );
               })
             ) : (
               <p className="rounded-md border border-[#26352c] bg-[#08100b] p-3 text-sm text-[#94a298]">
-                No paper bets settled on this day.
+                No paper bets are scheduled or settled on this day.
               </p>
             )}
           </div>
