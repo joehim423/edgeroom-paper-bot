@@ -312,9 +312,11 @@ async function updateBet(id, patch) {
 
 async function settleOpenBets(state, bets) {
   let bankroll = Number(state.current_bankroll);
+  const selected = await oddsFetch("/bookmakers/selected").catch(() => null);
+  const fallbackBookmakers = selected ? selectedBookmakers(selected) : [];
 
   for (const bet of bets.filter((item) => item.status === "open")) {
-    const event = await oddsFetch(`/events/${bet.event_id}`).catch(() => null);
+    const event = await settlementEventForBet(bet, fallbackBookmakers);
     if (!event || !/settled|completed|finished|final/i.test(String(event.status))) continue;
 
     const settlement = settleByScore(bet, event);
@@ -331,6 +333,19 @@ async function settleOpenBets(state, bets) {
   }
 
   return bankroll;
+}
+
+async function settlementEventForBet(bet, fallbackBookmakers) {
+  const event = await oddsFetch(`/events/${bet.event_id}`).catch(() => null);
+  if (event?.status && event?.scores) return event;
+
+  const bookmakers = Array.from(new Set([bet.book, ...fallbackBookmakers].filter(Boolean)));
+  if (bookmakers.length === 0) return event;
+
+  return oddsFetch("/odds", {
+    eventId: bet.event_id,
+    bookmakers: bookmakers.join(","),
+  }).catch(() => event);
 }
 
 async function makeDailyBets(state, bets) {
