@@ -151,6 +151,10 @@ function profitFor(pick: ApiPick, result: PickResult) {
   return profitPayout(result.stake, pick.bestOdds);
 }
 
+function uniqueBetsById(bets: PaperBotBet[]) {
+  return Array.from(new Map(bets.map((bet) => [bet.id, bet])).values());
+}
+
 function recommendedStake(pick: ApiPick, bankroll: number, maxRisk: number) {
   const b = pick.bestOdds - 1;
   const kelly = b > 0 ? pick.edge / b : 0;
@@ -485,7 +489,7 @@ function PaperBotPanel({
   message: string | null;
   state: PaperBotState | null;
 }) {
-  const bets = state?.bets.slice().reverse().slice(0, 5) ?? [];
+  const bets = state ? uniqueBetsById(state.bets).slice().reverse().slice(0, 5) : [];
 
   return (
     <section className="rounded-lg border border-[#243129] bg-[#101611] p-4 shadow-xl shadow-black/20">
@@ -554,6 +558,7 @@ function PnlCalendar({
   todayIso: string;
 }) {
   const [selectedDate, setSelectedDate] = useState<string | null>(todayIso);
+  const uniquePaperBets = uniqueBetsById(paperBets);
   const year = month.getFullYear();
   const monthIndex = month.getMonth();
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
@@ -567,18 +572,15 @@ function PnlCalendar({
     dailyPnl.set(result.settledDate, (dailyPnl.get(result.settledDate) ?? 0) + profitFor(pick, result));
   });
 
-  paperBets.forEach((bet) => {
+  uniquePaperBets.forEach((bet) => {
     if (bet.status === "open") return;
     const date = localIsoDateFromTimestamp(bet.settledAt ?? bet.placedAt);
     dailyPnl.set(date, (dailyPnl.get(date) ?? 0) + bet.profit);
   });
 
-  paperBets.forEach((bet) => {
-    const dates = new Set([localIsoDateFromTimestamp(bet.placedAt)]);
-    if (bet.settledAt) dates.add(localIsoDateFromTimestamp(bet.settledAt));
-    dates.forEach((date) => {
-      paperBetsByDate.set(date, [...(paperBetsByDate.get(date) ?? []), bet]);
-    });
+  uniquePaperBets.forEach((bet) => {
+    const date = localIsoDateFromTimestamp(bet.placedAt);
+    paperBetsByDate.set(date, [...(paperBetsByDate.get(date) ?? []), bet]);
   });
 
   const monthValues = Array.from({ length: daysInMonth }, (_, index) => {
@@ -679,7 +681,7 @@ function PnlCalendar({
         <div className="mx-5 mb-4 rounded-lg border border-[#26352c] bg-[#0c110d] p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#7fa58c]">Paper bets</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#7fa58c]">Paper bets placed</p>
               <h3 className="mt-1 text-base font-semibold text-white">{formatCalendarDate(selectedDate)}</h3>
             </div>
             <button
@@ -738,7 +740,7 @@ function PnlCalendar({
               })
             ) : (
               <p className="rounded-md border border-[#26352c] bg-[#08100b] p-3 text-sm text-[#94a298]">
-                No paper bets were logged on this day.
+                No paper bets were placed on this day.
               </p>
             )}
           </div>
