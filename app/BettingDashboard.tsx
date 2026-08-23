@@ -579,7 +579,7 @@ function PnlCalendar({
   });
 
   uniquePaperBets.forEach((bet) => {
-    const date = localIsoDateFromTimestamp(bet.placedAt);
+    const date = localIsoDateFromTimestamp(bet.settledAt ?? bet.placedAt);
     paperBetsByDate.set(date, [...(paperBetsByDate.get(date) ?? []), bet]);
   });
 
@@ -681,7 +681,7 @@ function PnlCalendar({
         <div className="mx-5 mb-4 rounded-lg border border-[#26352c] bg-[#0c110d] p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#7fa58c]">Paper bets placed</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#7fa58c]">Paper bets settled</p>
               <h3 className="mt-1 text-base font-semibold text-white">{formatCalendarDate(selectedDate)}</h3>
             </div>
             <button
@@ -740,7 +740,7 @@ function PnlCalendar({
               })
             ) : (
               <p className="rounded-md border border-[#26352c] bg-[#08100b] p-3 text-sm text-[#94a298]">
-                No paper bets were placed on this day.
+                No paper bets settled on this day.
               </p>
             )}
           </div>

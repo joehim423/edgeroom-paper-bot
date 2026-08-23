@@ -72,6 +72,14 @@ function eventTime(event) {
   return event.date ?? event.startTime ?? event.commenceTime ?? null;
 }
 
+function eventDate(event) {
+  const time = eventTime(event);
+  if (!time) return null;
+  const date = new Date(time);
+  if (Number.isNaN(date.getTime())) return null;
+  return localDate(date);
+}
+
 function label(value, fallback = "Sport") {
   if (!value) return fallback;
   if (typeof value === "string") return value;
@@ -367,8 +375,9 @@ async function makeDailyBets(state, bets) {
   );
   const events = eventLists
     .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
+    .filter((event) => eventDate(event) === today)
     .slice(0, MAX_TOTAL_EVENTS);
-  if (events.length === 0) throw new Error("No events returned from odds-api.io.");
+  if (events.length === 0) throw new Error(`No same-day events returned from odds-api.io for ${today}.`);
 
   const oddsEvents = await Promise.allSettled(
     events.map((event) =>

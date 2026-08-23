@@ -86,6 +86,14 @@ function eventTime(event) {
   return event.date ?? event.startTime ?? event.commenceTime ?? null;
 }
 
+function eventDate(event) {
+  const time = eventTime(event);
+  if (!time) return null;
+  const date = new Date(time);
+  if (Number.isNaN(date.getTime())) return null;
+  return localDate(date);
+}
+
 function label(value, fallback = "Sport") {
   if (!value) return fallback;
   if (typeof value === "string") return value;
@@ -248,13 +256,14 @@ async function makeDailyBets(state, apiKey) {
   );
   const events = eventLists
     .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
+    .filter((event) => eventDate(event) === today)
     .slice(0, MAX_TOTAL_EVENTS);
   if (events.length === 0) {
     const failure = eventLists.find((result) => result.status === "rejected");
     throw new Error(
       failure?.status === "rejected"
         ? `No events returned. ${failure.reason?.message ?? ""}`.trim()
-        : "No events returned from odds-api.io.",
+        : `No same-day events returned from odds-api.io for ${today}.`,
     );
   }
 
