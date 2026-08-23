@@ -1,95 +1,76 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-type Pick = {
+type ApiPick = {
   id: string;
-  matchup: string;
+  sport: string;
+  event: string;
+  commenceTime: string | null;
   market: string;
   selection: string;
-  stakeOdds: number;
-  shuffleOdds: number;
-  modelChance: number;
+  exactBet: string;
+  bestBook: string;
+  bestOdds: number;
+  fairProbability: number;
+  edge: number;
   confidence: number;
-  status: "open" | "won" | "lost" | "push";
-  stake: number;
+  booksChecked: number;
+  explanation: string;
 };
 
-const startingPicks: Pick[] = [
-  {
-    id: "1",
-    matchup: "Boston vs New York",
-    market: "Moneyline",
-    selection: "Boston",
-    stakeOdds: -118,
-    shuffleOdds: -110,
-    modelChance: 56,
-    confidence: 63,
-    status: "open",
-    stake: 42,
-  },
-  {
-    id: "2",
-    matchup: "Dallas vs Phoenix",
-    market: "Player points over 24.5",
-    selection: "Lead scorer over",
-    stakeOdds: 104,
-    shuffleOdds: 112,
-    modelChance: 52,
-    confidence: 58,
-    status: "open",
-    stake: 28,
-  },
-  {
-    id: "3",
-    matchup: "Seattle vs LA",
-    market: "Total under 8.5",
-    selection: "Under",
-    stakeOdds: -102,
-    shuffleOdds: -108,
-    modelChance: 53,
-    confidence: 55,
-    status: "lost",
-    stake: 25,
-  },
-];
+type OddsResponse = {
+  status: "ok" | "needs_key" | "needs_bookmakers" | "error";
+  message?: string;
+  generatedAt?: string;
+  selectedBookmakers?: string[];
+  sportsScanned?: number;
+  eventsScanned?: number;
+  offersScanned?: number;
+  picks: ApiPick[];
+};
 
-function decimalFromAmerican(odds: number) {
-  return odds > 0 ? odds / 100 + 1 : 100 / Math.abs(odds) + 1;
-}
+type PickResult = {
+  id: string;
+  status: "open" | "won" | "lost" | "push";
+  stake: number;
+  settledDate: string;
+};
 
-function impliedProbability(odds: number) {
-  return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100);
-}
+type PaperBotBet = {
+  id: string;
+  placedAt: string;
+  sport: string;
+  event: string;
+  market: string;
+  selection: string;
+  book: string;
+  odds: number;
+  stake: number;
+  riskPercent: number;
+  exactBet: string;
+  status: "open" | "won" | "lost" | "push";
+  profit: number;
+};
 
-function profitFor(pick: Pick) {
-  if (pick.status === "push" || pick.status === "open") return 0;
-  if (pick.status === "lost") return -pick.stake;
-  return pick.stake * (decimalFromAmerican(bestOdds(pick).odds) - 1);
-}
+type PaperBotState = {
+  botProfile?: string;
+  botMaxRiskPerBetPercent?: number;
+  botMaxDailyRiskPercent?: number;
+  startingBankroll: number;
+  currentBankroll: number;
+  startedAt: string;
+  lastRunAt: string | null;
+  weekProfit: number;
+  openExposure: number;
+  lastError?: string;
+  dailyRuns: { date: string; picksAdded: number; botMaxDailyRiskPercent?: number }[];
+  bets: PaperBotBet[];
+};
 
-function bestOdds(pick: Pick) {
-  const stakeDecimal = decimalFromAmerican(pick.stakeOdds);
-  const shuffleDecimal = decimalFromAmerican(pick.shuffleOdds);
-  return stakeDecimal >= shuffleDecimal
-    ? { book: "Stake", odds: pick.stakeOdds, decimal: stakeDecimal }
-    : { book: "Shuffle", odds: pick.shuffleOdds, decimal: shuffleDecimal };
-}
-
-function recommendedStake(pick: Pick, bankroll: number, maxRisk: number) {
-  const best = bestOdds(pick);
-  const chance = pick.modelChance / 100;
-  const edge = chance * best.decimal - 1;
-  const b = best.decimal - 1;
-  const kelly = b > 0 ? (chance * best.decimal - 1) / b : 0;
-  const confidenceScale = Math.max(0.2, Math.min(1, pick.confidence / 100));
-  const cappedFraction = Math.min(Math.max(kelly * 0.35 * confidenceScale, 0), maxRisk / 100);
-  return {
-    edge,
-    stake: edge > 0 ? bankroll * cappedFraction : 0,
-    risk: cappedFraction,
-  };
-}
+const STORAGE_KEY = "edgeroom-api-results-v1";
+const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const weekDays = ["M", "T", "W", "T", "F", "S", "S"];
 
 function formatMoney(value: number) {
   return new Intl.NumberFormat("en-US", {
@@ -99,225 +80,337 @@ function formatMoney(value: number) {
   }).format(value);
 }
 
+function formatShortMoney(value: number) {
+  if (value === 0) return "$0";
+  const prefix = value > 0 ? "+" : "-";
+  return `${prefix}$${Math.abs(value).toFixed(2)}`;
+}
+
+function formatDateTime(value: string | null) {
+  if (!value) return "Time TBA";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function isoDate(year: number, month: number, day: number) {
+  return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function todayIsoLocal() {
+  const today = new Date();
+  return isoDate(today.getFullYear(), today.getMonth(), today.getDate());
+}
+
+function currentMonthStart() {
+  const today = new Date();
+  return new Date(today.getFullYear(), today.getMonth(), 1);
+}
+
+function monthStartFromIso(date: string) {
+  const [year, month] = date.split("-").map(Number);
+  return new Date(year, month - 1, 1);
+}
+
+function totalPayout(stake: number, decimal: number) {
+  return stake * decimal;
+}
+
+function profitPayout(stake: number, decimal: number) {
+  return totalPayout(stake, decimal) - stake;
+}
+
+function profitFor(pick: ApiPick, result: PickResult) {
+  if (result.status === "push" || result.status === "open") return 0;
+  if (result.status === "lost") return -result.stake;
+  return profitPayout(result.stake, pick.bestOdds);
+}
+
+function recommendedStake(pick: ApiPick, bankroll: number, maxRisk: number) {
+  const b = pick.bestOdds - 1;
+  const kelly = b > 0 ? pick.edge / b : 0;
+  const confidenceScale = Math.max(0.25, Math.min(1, pick.confidence / 100));
+  const cappedFraction = Math.min(Math.max(kelly * 0.3 * confidenceScale, 0), maxRisk / 100);
+
+  return {
+    risk: cappedFraction,
+    stake: pick.edge > 0 ? bankroll * cappedFraction : 0,
+  };
+}
+
 export function BettingDashboard() {
+  const [todayIso] = useState(() => todayIsoLocal());
   const [bankroll, setBankroll] = useState(1200);
   const [maxRisk, setMaxRisk] = useState(3);
-  const [picks, setPicks] = useState<Pick[]>(startingPicks);
+  const [calendarMonth, setCalendarMonth] = useState(() => currentMonthStart());
+  const [data, setData] = useState<OddsResponse>({
+    status: "ok",
+    picks: [],
+  });
+  const [paperBot, setPaperBot] = useState<PaperBotState | null>(null);
+  const [results, setResults] = useState<Record<string, PickResult>>({});
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const saved = window.localStorage.getItem("edgeroom-state");
-    if (!saved) return;
+  const loadOdds = useCallback(async () => {
+    setLoading(true);
     try {
-      const parsed = JSON.parse(saved) as {
-        bankroll?: number;
-        maxRisk?: number;
-        picks?: Pick[];
-      };
-      if (parsed.bankroll) setBankroll(parsed.bankroll);
-      if (parsed.maxRisk) setMaxRisk(parsed.maxRisk);
-      if (parsed.picks?.length) setPicks(parsed.picks);
-    } catch {
-      window.localStorage.removeItem("edgeroom-state");
+      const response = await fetch("/api/odds", { cache: "no-store" });
+      const nextData = (await response.json()) as OddsResponse;
+      setData(nextData);
+    } catch (error) {
+      setData({
+        status: "error",
+        message: error instanceof Error ? error.message : "Unable to load odds.",
+        picks: [],
+      });
+    } finally {
+      setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem(
-      "edgeroom-state",
-      JSON.stringify({ bankroll, maxRisk, picks }),
-    );
-  }, [bankroll, maxRisk, picks]);
+    loadOdds();
+  }, [loadOdds]);
 
-  const settledProfit = useMemo(
-    () => picks.reduce((total, pick) => total + profitFor(pick), 0),
-    [picks],
-  );
+  useEffect(() => {
+    fetch(`/paper-bot-state.json?ts=${Date.now()}`, { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((state) => setPaperBot(state as PaperBotState | null))
+      .catch(() => setPaperBot(null));
+  }, []);
 
-  const openExposure = picks
-    .filter((pick) => pick.status === "open")
-    .reduce((total, pick) => total + pick.stake, 0);
+  useEffect(() => {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (!saved) return;
+    try {
+      setResults(JSON.parse(saved) as Record<string, PickResult>);
+    } catch {
+      window.localStorage.removeItem(STORAGE_KEY);
+    }
+  }, []);
 
-  const rankedPicks = [...picks].sort(
-    (a, b) =>
-      recommendedStake(b, bankroll, maxRisk).edge -
-      recommendedStake(a, bankroll, maxRisk).edge,
-  );
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(results));
+  }, [results]);
 
-  function updatePick(id: string, patch: Partial<Pick>) {
-    setPicks((current) =>
-      current.map((pick) => (pick.id === id ? { ...pick, ...patch } : pick)),
+  const picks = data.picks.slice(0, 5);
+  const settledProfit = picks.reduce((total, pick) => {
+    const result = results[pick.id];
+    return result ? total + profitFor(pick, result) : total;
+  }, 0);
+  const openExposure = picks.reduce((total, pick) => {
+    const result = results[pick.id];
+    return result?.status === "open" ? total + result.stake : total;
+  }, 0);
+  const bestEdge = Math.max(0, ...picks.map((pick) => pick.edge * 100));
+  const avgConfidence =
+    picks.length === 0
+      ? 0
+      : picks.reduce((total, pick) => total + pick.confidence, 0) / picks.length;
+
+  function resultFor(pick: ApiPick) {
+    return (
+      results[pick.id] ?? {
+        id: pick.id,
+        status: "open",
+        stake: Number(recommendedStake(pick, bankroll, maxRisk).stake.toFixed(2)),
+        settledDate: todayIso,
+      }
     );
   }
 
-  function addPick() {
-    setPicks((current) => [
-      {
-        id: crypto.randomUUID(),
-        matchup: "New matchup",
-        market: "Market",
-        selection: "Selection",
-        stakeOdds: -110,
-        shuffleOdds: -105,
-        modelChance: 53,
-        confidence: 55,
-        status: "open",
-        stake: 20,
-      },
+  function updateResult(id: string, patch: Partial<PickResult>) {
+    setResults((current) => ({
       ...current,
-    ]);
+      [id]: {
+        ...(current[id] ?? { id, status: "open", stake: 0, settledDate: todayIso }),
+        ...patch,
+      },
+    }));
   }
 
   return (
-    <main className="min-h-screen bg-[#f4f2ec] text-[#121511]">
-      <section className="border-b border-[#d8d2c3] bg-[#101711] text-white">
-        <div className="mx-auto grid max-w-7xl gap-8 px-5 py-8 md:grid-cols-[1.2fr_0.8fr] md:px-8 lg:py-10">
-          <div className="flex flex-col justify-between gap-8">
+    <main className="min-h-screen bg-[#080b0a] text-[#eef5ef]">
+      <section className="border-b border-[#223027] bg-[#0d1410]">
+        <div className="mx-auto grid max-w-7xl gap-6 px-5 py-8 md:grid-cols-[1fr_440px] md:px-8">
+          <div className="grid content-between gap-6">
             <div>
               <p className="mb-3 text-sm font-semibold uppercase tracking-[0.18em] text-[#85e0a3]">
-                EdgeRoom Analyst
+                EdgeRoom Live Odds
               </p>
               <h1 className="max-w-3xl text-4xl font-semibold leading-tight md:text-6xl">
-                Smart betting picks, risk-sized before you place them.
+                Top 5 API-ranked bets.
               </h1>
+              <p className="mt-4 max-w-2xl text-sm leading-6 text-[#aab9ad]">
+                This compares selected sportsbook prices and sizes stakes from bankroll risk. There is no guaranteed profit, so confirm every line before placing a bet.
+              </p>
             </div>
-            <div className="grid gap-3 text-sm text-[#d9e2d5] sm:grid-cols-3">
-              <div className="border-l border-[#85e0a3] pl-4">
-                Compares Shuffle and Stake odds from your entries.
-              </div>
-              <div className="border-l border-[#85e0a3] pl-4">
-                Flags positive expected value and no-bet spots.
-              </div>
-              <div className="border-l border-[#85e0a3] pl-4">
-                Tracks settled profit, exposure, and bankroll drift.
-              </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <BoardStat label="Best edge" value={`${bestEdge.toFixed(1)}%`} tone={bestEdge > 0 ? "good" : "neutral"} />
+              <BoardStat label="Avg trust" value={`${avgConfidence.toFixed(0)}%`} />
+              <BoardStat label="Showing" value={`${picks.length}/5`} />
             </div>
           </div>
-          <div className="grid content-between gap-4 rounded-lg border border-[#384536] bg-[#182219] p-5">
+          <div className="grid gap-4 rounded-lg border border-[#2b3a30] bg-[#121b15] p-5 shadow-2xl shadow-black/30">
             <div className="grid grid-cols-2 gap-3">
-              <label className="grid gap-2 text-sm text-[#d9e2d5]">
-                Bankroll
-                <input
-                  className="h-11 rounded-md border border-[#3d4b3a] bg-[#101711] px-3 text-white outline-none focus:border-[#85e0a3]"
-                  min="1"
-                  type="number"
-                  value={bankroll}
-                  onChange={(event) => setBankroll(Number(event.target.value))}
-                />
-              </label>
-              <label className="grid gap-2 text-sm text-[#d9e2d5]">
-                Max risk %
-                <input
-                  className="h-11 rounded-md border border-[#3d4b3a] bg-[#101711] px-3 text-white outline-none focus:border-[#85e0a3]"
-                  max="10"
-                  min="0.25"
-                  step="0.25"
-                  type="number"
-                  value={maxRisk}
-                  onChange={(event) => setMaxRisk(Number(event.target.value))}
-                />
-              </label>
+              <NumberPanel label="Bankroll" value={bankroll} onChange={setBankroll} />
+              <NumberPanel label="Max risk %" value={maxRisk} onChange={setMaxRisk} step={0.25} />
             </div>
             <div className="grid grid-cols-3 gap-3">
               <Metric label="Settled P/L" value={formatMoney(settledProfit)} tone={settledProfit >= 0 ? "good" : "bad"} />
               <Metric label="Open risk" value={formatMoney(openExposure)} />
               <Metric label="Net bankroll" value={formatMoney(bankroll + settledProfit)} />
             </div>
-            <p className="text-xs leading-5 text-[#bac7b6]">
-              No sportsbook or model can guarantee profit. This tool is built to
-              avoid reckless bets, size positions, and make every decision auditable.
-            </p>
+            <button
+              className="h-11 rounded-md bg-[#46d982] px-4 text-sm font-semibold text-[#07100a] hover:bg-[#79eea6] disabled:cursor-wait disabled:opacity-60"
+              disabled={loading}
+              onClick={loadOdds}
+            >
+              {loading ? "Refreshing..." : "Refresh live odds"}
+            </button>
           </div>
         </div>
       </section>
 
-      <section className="mx-auto grid max-w-7xl gap-6 px-5 py-6 md:px-8 lg:grid-cols-[1fr_380px]">
+      <section className="mx-auto grid max-w-7xl gap-6 px-5 py-6 md:px-8 lg:grid-cols-[1fr_360px]">
         <div className="grid gap-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-2xl font-semibold">Bet Board</h2>
-              <p className="text-sm text-[#5d6258]">
-                Enter odds from Stake and Shuffle, then set your model chance.
-              </p>
-            </div>
-            <button
-              className="h-10 rounded-md bg-[#101711] px-4 text-sm font-semibold text-white hover:bg-[#263322]"
-              onClick={addPick}
-            >
-              + Add bet
-            </button>
-          </div>
+          <PnlCalendar
+            month={calendarMonth}
+            onMonthChange={setCalendarMonth}
+            picks={picks}
+            results={results}
+            todayIso={todayIso}
+          />
+
+          {data.status === "needs_bookmakers" ? (
+            <SetupState
+              title="Pick your 2 free sportsbooks"
+              body={data.message ?? "Select two bookmakers in odds-api.io before scanning odds."}
+            />
+          ) : null}
+
+          {data.status === "needs_key" || data.status === "error" ? (
+            <SetupState
+              title={data.status === "needs_key" ? "API key needed" : "Odds feed unavailable"}
+              body={data.message ?? "The odds feed could not be loaded."}
+            />
+          ) : null}
+
+          {data.status === "ok" && !loading && picks.length === 0 ? (
+            <SetupState
+              title="No API picks found"
+              body="The feed connected, but no comparable lines were returned for the selected sports and bookmakers yet."
+            />
+          ) : null}
 
           <div className="grid gap-3">
-            {rankedPicks.map((pick) => {
-              const best = bestOdds(pick);
+            {picks.map((pick, index) => {
               const rec = recommendedStake(pick, bankroll, maxRisk);
-              const edgePercent = rec.edge * 100;
-              const action = edgePercent > 2 ? "Bet" : edgePercent > 0 ? "Small lean" : "No bet";
+              const edgePercent = pick.edge * 100;
+              const result = resultFor(pick);
+              const stake = result.stake || rec.stake;
 
               return (
                 <article
-                  className="rounded-lg border border-[#d8d2c3] bg-white p-4 shadow-sm"
+                  className="overflow-hidden rounded-lg border border-[#243129] bg-[#101611] shadow-xl shadow-black/20"
                   key={pick.id}
                 >
-                  <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-                    <div className="grid gap-3">
-                      <div className="grid gap-2 sm:grid-cols-3">
-                        <TextInput label="Matchup" value={pick.matchup} onChange={(value) => updatePick(pick.id, { matchup: value })} />
-                        <TextInput label="Market" value={pick.market} onChange={(value) => updatePick(pick.id, { market: value })} />
-                        <TextInput label="Selection" value={pick.selection} onChange={(value) => updatePick(pick.id, { selection: value })} />
-                      </div>
-                      <div className="grid gap-2 sm:grid-cols-5">
-                        <NumberInput label="Stake odds" value={pick.stakeOdds} onChange={(value) => updatePick(pick.id, { stakeOdds: value })} />
-                        <NumberInput label="Shuffle odds" value={pick.shuffleOdds} onChange={(value) => updatePick(pick.id, { shuffleOdds: value })} />
-                        <NumberInput label="Model %" value={pick.modelChance} onChange={(value) => updatePick(pick.id, { modelChance: value })} />
-                        <NumberInput label="Trust %" value={pick.confidence} onChange={(value) => updatePick(pick.id, { confidence: value })} />
-                        <NumberInput label="Stake $" value={pick.stake} onChange={(value) => updatePick(pick.id, { stake: value })} />
-                      </div>
-                    </div>
-                    <div className="grid gap-3 rounded-md bg-[#f7f6f1] p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#697062]">
-                            Recommendation
-                          </p>
-                          <p className="text-2xl font-semibold">{action}</p>
-                        </div>
+                  <div className="grid gap-4 border-b border-[#223027] bg-[#121a14] p-4 lg:grid-cols-[1fr_auto]">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className={edgePercent > 0 ? "badge-good" : "badge-bad"}>
-                          {edgePercent.toFixed(1)}% EV
+                          #{index + 1} {edgePercent > 0 ? "Best price" : "Watch"}
+                        </span>
+                        <span className="rounded-full border border-[#2b3038] px-2.5 py-1 text-xs font-semibold text-[#96a49b]">
+                          {pick.bestBook}
+                        </span>
+                        <span className="rounded-full border border-[#2b3038] px-2.5 py-1 text-xs font-semibold text-[#96a49b]">
+                          {pick.sport}
                         </span>
                       </div>
-                      <div className="grid grid-cols-3 gap-2 text-sm">
-                        <div>
-                          <p className="text-[#697062]">Best book</p>
-                          <p className="font-semibold">{best.book}</p>
-                        </div>
-                        <div>
-                          <p className="text-[#697062]">Best odds</p>
-                          <p className="font-semibold">{best.odds > 0 ? `+${best.odds}` : best.odds}</p>
-                        </div>
-                        <div>
-                          <p className="text-[#697062]">Fair chance</p>
-                          <p className="font-semibold">{(impliedProbability(best.odds) * 100).toFixed(1)}%</p>
-                        </div>
+                      <h3 className="mt-3 text-2xl font-semibold text-white">
+                        {pick.selection}
+                      </h3>
+                      <p className="mt-1 text-sm text-[#94a298]">
+                        {pick.market} · {pick.event} · {formatDateTime(pick.commenceTime)}
+                      </p>
+                    </div>
+                    <div className="grid min-w-48 content-center gap-1 text-right">
+                      <p className={edgePercent > 0 ? "text-3xl font-semibold text-[#25f0aa]" : "text-3xl font-semibold text-[#ff2f87]"}>
+                        {edgePercent.toFixed(1)}%
+                      </p>
+                      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#7d897f]">
+                        Price edge
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 p-4 xl:grid-cols-[1fr_280px]">
+                    <div className="grid gap-3">
+                      <div className="rounded-md border border-[#46d982] bg-[#102a21] p-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8df0b4]">
+                          Exact bet
+                        </p>
+                        <p className="mt-1 text-sm font-semibold text-white">
+                          {pick.exactBet}
+                        </p>
                       </div>
-                      <div className="flex items-center justify-between gap-3 border-t border-[#ded8ca] pt-3">
-                        <div>
-                          <p className="text-sm text-[#697062]">Suggested amount</p>
-                          <p className="text-xl font-semibold">{formatMoney(rec.stake)}</p>
-                        </div>
-                        <select
-                          className="h-10 rounded-md border border-[#d8d2c3] bg-white px-3 text-sm"
-                          value={pick.status}
-                          onChange={(event) =>
-                            updatePick(pick.id, { status: event.target.value as Pick["status"] })
-                          }
+                      <div className="grid gap-2 sm:grid-cols-4">
+                        <InfoPill label="Best book" value={pick.bestBook} />
+                        <InfoPill label="Best odds" value={pick.bestOdds.toFixed(2)} />
+                        <InfoPill label="Implied" value={`${(1 / pick.bestOdds * 100).toFixed(1)}%`} />
+                        <InfoPill label="Trust" value={`${pick.confidence.toFixed(0)}%`} />
+                      </div>
+                      <p className="rounded-md border border-[#26352c] bg-[#0c110d] p-3 text-sm leading-6 text-[#abb9af]">
+                        {pick.explanation}
+                      </p>
+                    </div>
+
+                    <div className="grid gap-3 rounded-md border border-[#26352c] bg-[#151f18] p-3">
+                      <div className="grid grid-cols-3 gap-2">
+                        <InfoPill label="Stake" value={formatMoney(stake)} />
+                        <InfoPill label="Profit" value={formatMoney(profitPayout(stake, pick.bestOdds))} />
+                        <InfoPill label="Payout" value={formatMoney(totalPayout(stake, pick.bestOdds))} />
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8fa096]">Suggested stake</p>
+                        <p className="text-2xl font-semibold text-white">{formatMoney(rec.stake)}</p>
+                        <p className="text-xs text-[#8fa096]">{(rec.risk * 100).toFixed(2)}% bankroll risk</p>
+                      </div>
+                      <div className="grid grid-cols-[1fr_auto] gap-2">
+                        <NumberInput
+                          label="Tracked stake $"
+                          value={result.stake}
+                          onChange={(value) => updateResult(pick.id, { stake: value })}
+                        />
+                        <button
+                          className="self-end rounded-md border border-[#46d982] px-3 text-xs font-semibold text-[#46d982] hover:bg-[#102a21]"
+                          onClick={() => updateResult(pick.id, { stake: Number(rec.stake.toFixed(2)) })}
                         >
-                          <option value="open">Open</option>
-                          <option value="won">Won</option>
-                          <option value="lost">Lost</option>
-                          <option value="push">Push</option>
-                        </select>
+                          Apply
+                        </button>
                       </div>
+                      <select
+                        className="h-10 rounded-md border border-[#334238] bg-[#080b0a] px-3 text-sm text-white outline-none focus:border-[#46d982]"
+                        value={result.status}
+                        onChange={(event) =>
+                          updateResult(pick.id, { status: event.target.value as PickResult["status"] })
+                        }
+                      >
+                        <option value="open">Open</option>
+                        <option value="won">Won</option>
+                        <option value="lost">Lost</option>
+                        <option value="push">Push</option>
+                      </select>
+                      <input
+                        className="h-10 rounded-md border border-[#334238] bg-[#080b0a] px-3 text-sm font-normal text-[#eef5ef] outline-none focus:border-[#46d982]"
+                        type="date"
+                        value={result.settledDate}
+                        onChange={(event) => updateResult(pick.id, { settledDate: event.target.value })}
+                      />
                     </div>
                   </div>
                 </article>
@@ -327,28 +420,251 @@ export function BettingDashboard() {
         </div>
 
         <aside className="grid content-start gap-4">
-          <section className="rounded-lg border border-[#d8d2c3] bg-white p-4">
-            <h2 className="mb-3 text-xl font-semibold">AI Rules Engine</h2>
-            <div className="grid gap-3 text-sm text-[#3c4238]">
-              <Rule title="Only bet positive EV" body="A bet needs your model probability to beat the sportsbook's implied probability after odds shopping." />
-              <Rule title="Cap position size" body="The stake uses fractional Kelly logic and never exceeds your max-risk setting." />
-              <Rule title="Prefer the best price" body="The same pick can be good at one book and bad at another. Price matters." />
-              <Rule title="Track every result" body="Settled wins, losses, and pushes update P/L so the bot can stay honest." />
+          <section className="rounded-lg border border-[#243129] bg-[#101611] p-4 shadow-xl shadow-black/20">
+            <h2 className="mb-3 text-xl font-semibold">Feed Status</h2>
+            <div className="grid gap-3 text-sm">
+              <SummaryRow label="Status" value={loading ? "Loading" : data.status} />
+              <SummaryRow label="Books" value={(data.selectedBookmakers ?? []).join(", ") || "None selected"} />
+              <SummaryRow label="Sports" value={String(data.sportsScanned ?? 0)} />
+              <SummaryRow label="Events" value={String(data.eventsScanned ?? 0)} />
+              <SummaryRow label="Lines read" value={String(data.offersScanned ?? 0)} />
+              <SummaryRow label="Updated" value={data.generatedAt ? formatDateTime(data.generatedAt) : "Not yet"} />
             </div>
           </section>
 
-          <section className="rounded-lg border border-[#d8d2c3] bg-[#101711] p-4 text-white">
-            <h2 className="mb-3 text-xl font-semibold">Session Summary</h2>
-            <div className="grid gap-3 text-sm">
-              <SummaryRow label="Open bets" value={String(picks.filter((pick) => pick.status === "open").length)} />
-              <SummaryRow label="Settled bets" value={String(picks.filter((pick) => pick.status !== "open").length)} />
-              <SummaryRow label="Strongest edge" value={`${Math.max(...picks.map((pick) => recommendedStake(pick, bankroll, maxRisk).edge * 100)).toFixed(1)}%`} />
-              <SummaryRow label="Worst open risk" value={formatMoney(Math.max(0, ...picks.filter((pick) => pick.status === "open").map((pick) => pick.stake)))} />
+          <section className="rounded-lg border border-[#243129] bg-[#0d1410] p-4 text-white shadow-xl shadow-black/20">
+            <h2 className="mb-3 text-xl font-semibold">Free API Notes</h2>
+            <div className="grid gap-3 text-sm text-[#abb9af]">
+              <Rule title="Two books" body="odds-api.io free accounts need exactly two recreational books selected before odds endpoints work." />
+              <Rule title="Server-side key" body="The API key stays inside .env.local and only the local API route talks to odds-api.io." />
+              <Rule title="Risk control" body="Suggested stake uses a capped fractional Kelly style calculation, not a promise of profit." />
             </div>
           </section>
+
+          <PaperBotPanel state={paperBot} />
         </aside>
       </section>
     </main>
+  );
+}
+
+function PaperBotPanel({ state }: { state: PaperBotState | null }) {
+  const bets = state?.bets.slice().reverse().slice(0, 5) ?? [];
+
+  return (
+    <section className="rounded-lg border border-[#243129] bg-[#101611] p-4 shadow-xl shadow-black/20">
+      <h2 className="mb-3 text-xl font-semibold">7-Day Paper Bot</h2>
+      {state ? (
+        <div className="grid gap-3 text-sm">
+          <SummaryRow label="Bankroll" value={formatMoney(state.currentBankroll)} />
+          <SummaryRow label="Week P/L" value={formatMoney(state.weekProfit ?? state.currentBankroll - state.startingBankroll)} />
+          <SummaryRow label="Open risk" value={formatMoney(state.openExposure ?? 0)} />
+          <SummaryRow label="Profile" value={state.botProfile ?? "paper"} />
+          <SummaryRow
+            label="Risk caps"
+            value={`${state.botMaxRiskPerBetPercent ?? 12}% pick / ${state.botMaxDailyRiskPercent ?? 25}% day`}
+          />
+          <SummaryRow label="Last run" value={state.lastRunAt ? formatDateTime(state.lastRunAt) : "Not yet"} />
+          {state.lastError ? (
+            <p className="rounded-md border border-[#543141] bg-[#351b29] p-3 text-[#ff8dbb]">
+              {state.lastError}
+            </p>
+          ) : null}
+          <div className="grid gap-2">
+            {bets.length === 0 ? (
+              <p className="rounded-md border border-[#26352c] bg-[#0c110d] p-3 text-[#94a298]">
+                No paper bets logged yet. The scheduled bot will add picks on its next run.
+              </p>
+            ) : (
+              bets.map((bet) => (
+                <div className="rounded-md border border-[#26352c] bg-[#0c110d] p-3" key={bet.id}>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className={bet.status === "won" ? "text-[#25f0aa]" : bet.status === "lost" ? "text-[#ff2f87]" : "text-white"}>
+                      {bet.status.toUpperCase()}
+                    </span>
+                    <span className="text-[#94a298]">{formatMoney(bet.stake)}</span>
+                  </div>
+                  <p className="mt-2 font-semibold text-white">{bet.selection}</p>
+                  <p className="mt-1 text-xs leading-5 text-[#94a298]">
+                    {bet.market} · {bet.event} · {bet.book} @ {bet.odds.toFixed(2)}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      ) : (
+        <p className="rounded-md border border-[#26352c] bg-[#0c110d] p-3 text-sm leading-6 text-[#94a298]">
+          The bot state file has not been created yet. Run the paper bot once or wait for the scheduled task.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function PnlCalendar({
+  month,
+  onMonthChange,
+  picks,
+  results,
+  todayIso,
+}: {
+  month: Date;
+  onMonthChange: (date: Date) => void;
+  picks: ApiPick[];
+  results: Record<string, PickResult>;
+  todayIso: string;
+}) {
+  const year = month.getFullYear();
+  const monthIndex = month.getMonth();
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const firstDayOffset = (new Date(year, monthIndex, 1).getDay() + 6) % 7;
+  const dailyPnl = new Map<string, number>();
+
+  picks.forEach((pick) => {
+    const result = results[pick.id];
+    if (!result || result.status === "open" || !result.settledDate) return;
+    dailyPnl.set(result.settledDate, (dailyPnl.get(result.settledDate) ?? 0) + profitFor(pick, result));
+  });
+
+  const monthValues = Array.from({ length: daysInMonth }, (_, index) => {
+    const date = isoDate(year, monthIndex, index + 1);
+    return dailyPnl.get(date) ?? 0;
+  });
+  const monthTotal = monthValues.reduce((total, value) => total + value, 0);
+  const positiveDays = monthValues.filter((value) => value > 0).length;
+  const negativeDays = monthValues.filter((value) => value < 0).length;
+  const bestPositiveStreak = monthValues.reduce(
+    (state, value) => {
+      const current = value > 0 ? state.current + 1 : 0;
+      return { current, best: Math.max(state.best, current) };
+    },
+    { current: 0, best: 0 },
+  ).best;
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-[#2b3038] bg-[#141517] shadow-2xl shadow-black/30">
+      <div className="flex items-center justify-between gap-3 border-b border-[#252932] px-5 py-4">
+        <div>
+          <h2 className="text-base font-semibold text-white">PNL Calendar</h2>
+          <p className={monthTotal >= 0 ? "mt-3 text-sm font-semibold text-[#25f0aa]" : "mt-3 text-sm font-semibold text-[#ff2f87]"}>
+            {formatShortMoney(monthTotal)}
+          </p>
+        </div>
+        <div className="flex items-center gap-4 text-sm">
+          <button
+            aria-label="Previous month"
+            className="grid h-8 w-8 place-items-center rounded-md text-[#8b93a3] hover:bg-[#1c2028] hover:text-white"
+            onClick={() => onMonthChange(new Date(year, monthIndex - 1, 1))}
+          >
+            &lt;
+          </button>
+          <span className="min-w-24 text-center font-semibold text-[#d7dbe4]">
+            {monthNames[monthIndex]} {year}
+          </span>
+          <button
+            aria-label="Next month"
+            className="grid h-8 w-8 place-items-center rounded-md text-[#8b93a3] hover:bg-[#1c2028] hover:text-white"
+            onClick={() => onMonthChange(new Date(year, monthIndex + 1, 1))}
+          >
+            &gt;
+          </button>
+          <button
+            className="hidden rounded-md border border-[#2b3038] px-2.5 py-1 text-xs font-semibold text-[#8b93a3] hover:bg-[#1c2028] hover:text-white sm:inline"
+            onClick={() => onMonthChange(monthStartFromIso(todayIso))}
+          >
+            Today
+          </button>
+        </div>
+      </div>
+      <div className="grid grid-cols-7 border-b border-[#252932] px-5 py-3 text-center text-xs font-semibold text-[#747b8b]">
+        {weekDays.map((day, index) => (
+          <span key={`${day}-${index}`}>{day}</span>
+        ))}
+      </div>
+      <div className="grid grid-cols-7 gap-1 px-4 py-4">
+        {Array.from({ length: firstDayOffset }).map((_, index) => (
+          <div className="min-h-20" key={`blank-${index}`} />
+        ))}
+        {monthValues.map((value, index) => {
+          const day = index + 1;
+          const date = isoDate(year, monthIndex, day);
+          const isWin = value > 0;
+          const isLoss = value < 0;
+          const isToday = date === todayIso;
+          return (
+            <div
+              className={
+                isWin
+                  ? `calendar-day bg-[#102a21] text-[#25f0aa] ${isToday ? "ring-1 ring-[#46d982]" : ""}`
+                  : isLoss
+                    ? `calendar-day bg-[#351b29] text-[#ff2f87] ${isToday ? "ring-1 ring-[#46d982]" : ""}`
+                    : `calendar-day text-[#858b9b] ${isToday ? "ring-1 ring-[#46d982]" : ""}`
+              }
+              key={day}
+            >
+              <span className={isWin || isLoss ? "text-[#d6dae3]" : "text-[#565d6d]"}>
+                {day}
+              </span>
+              <strong>{formatShortMoney(value)}</strong>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 px-5 pb-4 text-xs text-[#8b93a3]">
+        <span className="rounded-full border border-[#2b3038] bg-[#181a1e] px-3 py-1">
+          Best Positive Streak in {monthNames[monthIndex]}:{" "}
+          <strong className="text-[#d7dbe4]">{bestPositiveStreak} days</strong>
+        </span>
+        <span>
+          <strong className="text-[#25f0aa]">{positiveDays}</strong> /{" "}
+          <strong className="text-[#ff2f87]">{negativeDays}</strong> active days
+        </span>
+      </div>
+    </section>
+  );
+}
+
+function SetupState({ title, body }: { title: string; body: string }) {
+  return (
+    <section className="rounded-lg border border-[#243129] bg-[#101611] p-6 shadow-xl shadow-black/20">
+      <h2 className="text-2xl font-semibold text-white">{title}</h2>
+      <p className="mt-2 max-w-3xl text-sm leading-6 text-[#abb9af]">{body}</p>
+      <a
+        className="mt-4 inline-flex h-10 items-center rounded-md border border-[#46d982] px-4 text-sm font-semibold text-[#46d982] hover:bg-[#102a21]"
+        href="https://odds-api.io/dashboard"
+        rel="noreferrer"
+        target="_blank"
+      >
+        Open odds-api.io dashboard
+      </a>
+    </section>
+  );
+}
+
+function NumberPanel({
+  label,
+  value,
+  onChange,
+  step = 1,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  step?: number;
+}) {
+  return (
+    <label className="grid gap-2 text-sm text-[#c7d4ca]">
+      {label}
+      <input
+        className="h-11 rounded-md border border-[#334238] bg-[#080b0a] px-3 text-white outline-none focus:border-[#46d982]"
+        min="0"
+        step={step}
+        type="number"
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+    </label>
   );
 }
 
@@ -371,24 +687,35 @@ function Metric({
   );
 }
 
-function TextInput({
+function BoardStat({
   label,
   value,
-  onChange,
+  tone = "neutral",
 }: {
   label: string;
   value: string;
-  onChange: (value: string) => void;
+  tone?: "good" | "neutral";
 }) {
   return (
-    <label className="grid gap-1 text-xs font-semibold text-[#5d6258]">
-      {label}
-      <input
-        className="h-10 rounded-md border border-[#d8d2c3] bg-white px-3 text-sm font-normal text-[#121511] outline-none focus:border-[#4b7f52]"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    </label>
+    <div className="rounded-lg border border-[#243129] bg-[#101611] p-3">
+      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#7d897f]">
+        {label}
+      </p>
+      <p className={tone === "good" ? "mt-1 text-xl font-semibold text-[#25f0aa]" : "mt-1 text-xl font-semibold text-white"}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function InfoPill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-[#26352c] bg-[#0c110d] p-2">
+      <p className="text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-[#758279]">
+        {label}
+      </p>
+      <p className="mt-1 font-semibold text-[#eef5ef]">{value}</p>
+    </div>
   );
 }
 
@@ -402,10 +729,10 @@ function NumberInput({
   onChange: (value: number) => void;
 }) {
   return (
-    <label className="grid gap-1 text-xs font-semibold text-[#5d6258]">
+    <label className="grid gap-1 text-xs font-semibold text-[#8fa096]">
       {label}
       <input
-        className="h-10 rounded-md border border-[#d8d2c3] bg-white px-3 text-sm font-normal text-[#121511] outline-none focus:border-[#4b7f52]"
+        className="h-10 rounded-md border border-[#334238] bg-[#080b0a] px-3 text-sm font-normal text-[#eef5ef] outline-none focus:border-[#46d982]"
         type="number"
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
@@ -416,8 +743,8 @@ function NumberInput({
 
 function Rule({ title, body }: { title: string; body: string }) {
   return (
-    <div className="border-l-2 border-[#4b7f52] pl-3">
-      <p className="font-semibold text-[#121511]">{title}</p>
+    <div className="border-l-2 border-[#46d982] pl-3">
+      <p className="font-semibold text-[#eef5ef]">{title}</p>
       <p>{body}</p>
     </div>
   );
@@ -425,9 +752,9 @@ function Rule({ title, body }: { title: string; body: string }) {
 
 function SummaryRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between border-b border-[#2d382c] pb-2 last:border-b-0 last:pb-0">
+    <div className="flex items-center justify-between gap-4 border-b border-[#2d382c] pb-2 last:border-b-0 last:pb-0">
       <span className="text-[#bac7b6]">{label}</span>
-      <span className="font-semibold">{value}</span>
+      <span className="text-right font-semibold">{value}</span>
     </div>
   );
 }

@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f4f2ec;
-  --foreground: #121511;
+  --background: #080b0a;
+  --foreground: #eef5ef;
 }
 
 @theme inline {
@@ -26,8 +26,8 @@ select {
 
 .badge-good {
   border-radius: 999px;
-  background: #dff6d9;
-  color: #215529;
+  background: #102a21;
+  color: #25f0aa;
   font-size: 0.8rem;
   font-weight: 700;
   padding: 0.35rem 0.6rem;
@@ -36,8 +36,8 @@ select {
 
 .badge-bad {
   border-radius: 999px;
-  background: #fde5dc;
-  color: #7b2f1b;
+  background: #351b29;
+  color: #ff2f87;
   font-size: 0.8rem;
   font-weight: 700;
   padding: 0.35rem 0.6rem;
@@ -45,13 +45,33 @@ select {
 }
 
 .metric-good {
-  color: #85e0a3;
+  color: #25f0aa;
   font-size: 1.125rem;
   font-weight: 700;
 }
 
 .metric-bad {
-  color: #ff9b7f;
+  color: #ff2f87;
   font-size: 1.125rem;
   font-weight: 700;
+}
+
+.calendar-day {
+  align-items: center;
+  border-radius: 0.375rem;
+  display: grid;
+  gap: 0.65rem;
+  min-height: 5.25rem;
+  padding: 0.45rem;
+  text-align: center;
+}
+
+.calendar-day strong {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.calendar-day span {
+  font-size: 0.75rem;
+  justify-self: start;
 }
