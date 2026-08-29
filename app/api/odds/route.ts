@@ -180,20 +180,44 @@ function isFutureEvent(event: Event) {
 }
 
 function selectionLabel(selection: string, hdp?: unknown) {
-  const line = hdp === undefined || hdp === null || hdp === "" ? "" : ` ${String(hdp)}`;
+  const line = hdp === undefined || hdp === null || hdp === "" ? "" : ` ${formatLineValue(hdp)}`;
   return `${selection}${line}`.replace(/\s+/g, " ").trim();
+}
+
+function formatLineValue(value: unknown) {
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  if (number > 0) return `+${number}`;
+  return String(number);
 }
 
 function rowOffers(row: OddRow, context: Omit<Offer, "selection" | "decimal">) {
   const offers: Offer[] = [];
   const label = typeof row.label === "string" ? row.label : "";
   const hdp = row.hdp ?? row.handicap ?? row.point ?? row.line;
+  const homeName = context.event.split(" @ ").at(1) ?? "Home";
+  const awayName = context.event.split(" @ ").at(0) ?? "Away";
+  const isSpread = /spread|handicap/i.test(context.market);
+  const homeHdp = row.homeHdp ?? row.homeHandicap ?? row.homePoint ?? row.homeLine ?? hdp;
+  const awayHdp = row.awayHdp ?? row.awayHandicap ?? row.awayPoint ?? row.awayLine ?? hdp;
 
   const home = decimalFromAny(row.home);
-  if (home) offers.push({ ...context, selection: context.event.split(" @ ").at(1) ?? "Home", decimal: home });
+  if (home) {
+    offers.push({
+      ...context,
+      selection: isSpread ? selectionLabel(homeName, homeHdp) : homeName,
+      decimal: home,
+    });
+  }
 
   const away = decimalFromAny(row.away);
-  if (away) offers.push({ ...context, selection: context.event.split(" @ ").at(0) ?? "Away", decimal: away });
+  if (away) {
+    offers.push({
+      ...context,
+      selection: isSpread ? selectionLabel(awayName, awayHdp) : awayName,
+      decimal: away,
+    });
+  }
 
   const draw = decimalFromAny(row.draw);
   if (draw) offers.push({ ...context, selection: "Draw", decimal: draw });

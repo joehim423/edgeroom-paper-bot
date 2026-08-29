@@ -371,10 +371,10 @@ export function BettingDashboard() {
                         </span>
                       </div>
                       <h3 className="mt-3 text-2xl font-semibold text-white">
-                        {pick.selection}
+                        {pick.selection} - {pick.market}
                       </h3>
                       <p className="mt-1 text-sm text-[#94a298]">
-                        {pick.market} · {pick.event} · {formatDateTime(pick.commenceTime)}
+                        {pick.event} · {formatDateTime(pick.commenceTime)}
                       </p>
                     </div>
                     <div className="grid min-w-48 content-center gap-1 text-right">
